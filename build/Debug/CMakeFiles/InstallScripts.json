@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"C:/Users/Kirl/Documents/STM32_Project/SmartCar/build/Debug/cmake_install.cmake",
-		"C:/Users/Kirl/Documents/STM32_Project/SmartCar/build/Debug/cmake/stm32cubemx/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
