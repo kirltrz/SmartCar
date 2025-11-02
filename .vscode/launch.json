@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+
+        {
+            "name": "OpenOCD + DAPLink Debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/Debug/SmartCar.elf", // 替换为你的ELF路径
+            "miDebuggerPath": "C:\\Program Files (x86)\\Arm GNU Toolchain arm-none-eabi\\14.3 rel1\\bin\\arm-none-eabi-gdb.exe", // 替换为你的GDB路径（如带完整路径）
+            "miDebuggerServerAddress": "localhost:3333",
+            "preLaunchTask": "start-openocd", // 关联tasks.json中的启动任务
+            "postDebugTask": "kill-openocd", // 关联关闭任务（可选）
+            "serverLaunchTimeout": 2000,
+            "externalConsole": false,
+            "cwd": "${workspaceFolder}", // 新增：指定工作目录为项目根目录
+            "logging": {
+                "moduleLoad": false,
+                "trace": true
+            },
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set target architecture",
+                    "text": "set architecture arm",
+                    "ignoreFailures": true
+                },
+                {
+                    "text": "target remote localhost:3333"
+                },
+                {
+                    "text": "monitor reset halt" // 复位并暂停芯片
+                },
+                {
+                    "text": "load" // 加载程序
+                }
+            ],
+            "launchCompleteCommand": "exec-run"
+        }
+    ]
+}

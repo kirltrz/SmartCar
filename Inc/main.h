@@ -67,6 +67,8 @@ void Error_Handler(void);
 #define AD_CS2_GPIO_Port GPIOA
 #define AD_CS1_Pin GPIO_PIN_4
 #define AD_CS1_GPIO_Port GPIOA
+#define IMU_CS_Pin GPIO_PIN_12
+#define IMU_CS_GPIO_Port GPIOB
 #define L_MOTOR_IN1_Pin GPIO_PIN_8
 #define L_MOTOR_IN1_GPIO_Port GPIOA
 #define L_MOTOR_IN2_Pin GPIO_PIN_9

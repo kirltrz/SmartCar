@@ -1,0 +1,43 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "start-openocd",
+            "type": "shell",
+            "command": "C:\\Program Files\\OpenOCD\\bin\\openocd.exe",
+            "args": [
+                "-f", "interface/cmsis-dap.cfg",
+                "-f", "target/stm32f1x.cfg"
+            ],
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "cpp",
+                "pattern": {
+                    "regexp": "^(.*)$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "Info : starting gdb server for",
+                    "endsPattern": "Info : Listening on port 3333 for gdb connections"
+                }
+            }
+        },
+        {
+            "label": "kill-openocd",
+            "type": "shell",
+            "command": "taskkill",
+            "args": ["/f", "/im", "openocd.exe"],
+            "problemMatcher": []
+        },
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "make",
+            "problemMatcher": ["$gcc"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
