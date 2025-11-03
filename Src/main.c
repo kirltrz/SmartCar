@@ -234,16 +234,26 @@ int main(void)
   HAL_Delay(500);
   LSM6DSR_Init();
 
-  AD7689_HandleTypeDef hadc;
-  uint16_t adc_values[8];
-    
-  // 初始化AD7689
-  hadc.hspi = &hspi1;  // 假设使用SPI1
-  hadc.cnv_port = AD_CS1_GPIO_Port;
-  hadc.cnv_pin = AD_CS1_Pin;
-  hadc.vref = 2.5f;
-    
-  AD7689_Init(&hadc);
+  // AD7689各通道配置（关键修改：选择内部2.5V基准）
+  // 配置说明：bit10-9=01（内部2.5V基准），bit8=0（单极性），bit7-4=1111（全带宽），bit3=0（禁用序列器），bit2=0（不回读CFG）
+  IN_DAT[0] = (0x3849 << 2);  // 通道0（内部2.5V基准配置）
+  IN_DAT[1] = (0x38C9 << 2);  // 通道1
+  IN_DAT[2] = (0x3949 << 2);  // 通道2
+  IN_DAT[3] = (0x39C9 << 2);  // 通道3
+  IN_DAT[4] = (0x3A49 << 2);  // 通道4
+  IN_DAT[5] = (0x3AC9 << 2);  // 通道5
+  IN_DAT[6] = (0x3B49 << 2);  // 通道6
+  IN_DAT[7] = (0x3BC9 << 2);  // 通道7
+
+  // 初始化所有8通道的零点偏置数据（2.5V基准下需重新校准！）
+  bias_data[0] = BIAS_VOLTAGE_IN0;
+  bias_data[1] = BIAS_VOLTAGE_IN1;
+  bias_data[2] = BIAS_VOLTAGE_IN2;
+  bias_data[3] = BIAS_VOLTAGE_IN3;
+  bias_data[4] = BIAS_VOLTAGE_IN4;
+  bias_data[5] = BIAS_VOLTAGE_IN5;
+  bias_data[6] = BIAS_VOLTAGE_IN6;
+  bias_data[7] = BIAS_VOLTAGE_IN7;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -253,11 +263,37 @@ int main(void)
     /*
     int16_t accel_x = Read_Acceleration_X();
     uart_printf("<X Acceleration: %d>", accel_x);*/
-    if(AD7689_ScanChannels(&hadc, adc_values, 8) == HAL_OK) {
-        // 处理采集到的数据
-        uart_printf("<ADC: %d %d %d %d %d %d %d %d>",adc_values[0],adc_values[1],adc_values[2],adc_values[3],adc_values[4],adc_values[5],adc_values[6],adc_values[7]);
+    // 1. 采集8通道AD原始数据
+    uint16_t ad7689_cfg[8] = {
+      IN_DAT[2], IN_DAT[3], IN_DAT[4], IN_DAT[5],
+      IN_DAT[6], IN_DAT[7],IN_DAT[0], IN_DAT[1]
+    };
+    int i;
+    for(i = 0; i < 8; i++){
+      Conve_data[i] = AD7689_Get_Data(ad7689_cfg[i]);  // 读取AD原始值
+      HAL_Delay(1);
     }
-    HAL_Delay(10);
+
+    // 2. 基于2.5V基准计算电压（单位：mV）
+    uart_printf("<");
+    
+    for(i = 0; i < 8; i++){				
+      // 公式说明：
+      // (AD值 - 偏置AD值)：去除零点误差
+      // * REFERENCE_VOLTAGE：乘以基准电压（2500mV）
+      // / 0xFFFF：除以AD满量程（16位AD，最大值65535）
+      // * (OPA_RES_R1 + OPA_RES_R2)/OPA_RES_R2：运放放大倍数（(R1+R2)/R2）
+      // 简化后公式与下方一致
+      /*
+      voltage_data[i] = (Conve_data[i] - bias_data[i]) 
+                      * REFERENCE_VOLTAGE / OPA_RES_R2 
+                      * (OPA_RES_R1 + OPA_RES_R2) / 0xFFFF;*/
+      uart_printf("%d\n", Conve_data[i]);
+    }
+    uart_printf(">");
+
+    // 3. 延时控制采集频率
+    HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

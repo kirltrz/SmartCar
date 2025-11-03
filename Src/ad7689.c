@@ -1,79 +1,127 @@
-#include <stdint.h>
-#include "main.h"
+/**
+  ******************************************************************************
+  * 文件名程: bsp_AD7689.c 
+  * 作    者: 硬石嵌入式开发团队
+  * 版    本: V1.0
+  * 编写日期: 2017-03-30
+  * 功    能: bsp_AD7689
+  ******************************************************************************
+  * 说明：
+  * 本例程配套硬石stm32开发板YS-F4Pro使用。
+  * 
+  * 淘宝：
+  * 论坛：http://www.ing10bbs.com
+  * 版权归硬石嵌入式开发团队所有，请勿商用。
+  ******************************************************************************
+  */
+
+/* 包含头文件 ----------------------------------------------------------------*/
 #include "ad7689.h"
+#include "spi.h"
 
+/* 私有类型定义 --------------------------------------------------------------*/
+/* 私有宏定义 ----------------------------------------------------------------*/
+/* 私有变量 ------------------------------------------------------------------*/
+SPI_HandleTypeDef hspi_AD7689;
 
+/* 扩展变量 ------------------------------------------------------------------*/
+uint16_t     IN_DAT[Chanal];             //单极性，全带宽，内部基准4.096，禁用通道序列器，不回读CFG
+__IO double  voltage_data[8];            // 电压值（单位：mV）
+__IO double  current_data[8];            // 电流值（单位：uA）
+__IO int32_t bias_data[8];               // 零点电压的AD转换结果
+__IO uint8_t Conve_flag = Conve_False;	 // 滤波结果
+uint16_t Conve_data[8]={0};          // 滤波数值		
+/* 私有函数原形 --------------------------------------------------------------*/
 
-// 使用SPI接口的AD7689驱动
-HAL_StatusTypeDef AD7689_Init(AD7689_HandleTypeDef *hadc) {
-    // 初始化CNV引脚
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    
-    GPIO_InitStruct.Pin = hadc->cnv_pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(hadc->cnv_port, &GPIO_InitStruct);
-    
-    // 初始状态
-    HAL_GPIO_WritePin(hadc->cnv_port, hadc->cnv_pin, GPIO_PIN_RESET);
-    
-    // 初始化默认配置
-    hadc->config.bits.CFG = 0;
-    hadc->config.bits.INCC = AD7689_INCC_UNIPOLAR_GROUND;
-    hadc->config.bits.INX = AD7689_CH0;
-    hadc->config.bits.BW = 0;
-    hadc->config.bits.REF = AD7689_REF_INTERNAL;
-    hadc->config.bits.SEQ = AD7689_SEQ_DISABLE;
-    hadc->config.bits.RB = 0;
-    hadc->config.bits.reserved = 0;
-    
-    return HAL_OK;
+/* 函数体 --------------------------------------------------------------------*/
+/**
+  * 函数功能: SPI初始化
+  * 输入参数: 无
+  * 返 回 值: 无
+  * 说    明: 该函数被HAL库内部调用
+*/
+void YS_AD7689_SPI_Init(void)
+{
+  
+  GPIO_InitTypeDef GPIO_InitStruct;
+  /* 使能SPI外设以及SPI引脚时钟 */
+  AD7689_SPIx_CLK_ENABLE();
+  AD7689_GPIO_CLK_ENABLE();
+
+  AD_CS1_HIGH() ;
+	
+  GPIO_InitStruct.Pin = AD7689_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;	
+  HAL_GPIO_Init(AD7689_CS_Port, &GPIO_InitStruct);
+	
+  GPIO_InitStruct.Pin = AD7689_SCK_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  HAL_GPIO_Init(AD7689_SCK_Port, &GPIO_InitStruct);
+  
+  GPIO_InitStruct.Pin = AD7689_MOSI_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  HAL_GPIO_Init(AD7689_MOSI_Port, &GPIO_InitStruct);
+  
+  GPIO_InitStruct.Pin = AD7689_MISO_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  HAL_GPIO_Init(AD7689_MISO_Port, &GPIO_InitStruct);
+
+  /* SPI外设配置 */
+  hspi_AD7689.Instance = AD7689_SPIx;
+  hspi_AD7689.Init.Mode = SPI_MODE_MASTER;
+  hspi_AD7689.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi_AD7689.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi_AD7689.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi_AD7689.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi_AD7689.Init.NSS = SPI_NSS_SOFT;
+  hspi_AD7689.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi_AD7689.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi_AD7689.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi_AD7689.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi_AD7689.Init.CRCPolynomial = 7;
+  HAL_SPI_Init(&hspi_AD7689);
+
 }
 
-// 使用SPI进行转换
-HAL_StatusTypeDef AD7689_ReadChannel_SPI(AD7689_HandleTypeDef *hadc, 
-                                        AD7689_Channel_t channel, 
-                                        uint16_t *adc_value) {
-    uint8_t tx_data[2] = {0};
-    uint8_t rx_data[2] = {0};
-    
-    // 更新通道配置
-    hadc->config.bits.INX = channel;
-    
-    // 准备发送数据（配置字）
-    tx_data[0] = (hadc->config.value >> 8) & 0xFF;
-    tx_data[1] = hadc->config.value & 0xFF;
-    
-    // 启动转换
-    HAL_GPIO_WritePin(hadc->cnv_port, hadc->cnv_pin, GPIO_PIN_SET);
-    HAL_Delay(1);  // 转换时间
-    
-    // 读取数据（同时写入配置）
-    HAL_GPIO_WritePin(hadc->cnv_port, hadc->cnv_pin, GPIO_PIN_RESET);
-    
-    if(HAL_SPI_TransmitReceive(hadc->hspi, tx_data, rx_data, 2, 100) != HAL_OK) {
-        return HAL_ERROR;
-    }
-    
-    // 组合ADC结果
-    *adc_value = ((rx_data[0] & 0x0F) << 8) | rx_data[1];
-    
-    return HAL_OK;
+/**
+  * 函数功能: 简单延时
+  * 输入参数: 无
+  * 返 回 值: 无
+  * 说    明: 该函数被HAL库内部调用
+*/
+static void AD7689_Delay(uint16_t time)
+{
+	while(time-->0);
 }
 
-// 多通道扫描
-HAL_StatusTypeDef AD7689_ScanChannels(AD7689_HandleTypeDef *hadc, 
-                                     uint16_t *results, 
-                                     uint8_t num_channels) {
-    if(num_channels > 8) return HAL_ERROR;
-    
-    for(uint8_t i = 0; i < num_channels; i++) {
-        if(AD7689_ReadChannel_SPI(hadc, (AD7689_Channel_t)i, &results[i]) != HAL_OK) {
-            return HAL_ERROR;
-        }
-        HAL_Delay(1);
-    }
-    
-    return HAL_OK;
+/**
+  * 函数功能: 获取AD7689数值
+  * 输入参数: 无
+  * 返 回 值: 无
+  * 说    明: 该函数被HAL库内部调用
+*/
+uint16_t AD7689_Get_Data(uint16_t cmd)
+{
+  uint8_t  registerWord[2];
+  unsigned char buf[2] ={0,0};
+
+  registerWord[0] = cmd>>8;
+  registerWord[1] = cmd;
+  AD7689_Delay(1000);
+  /* 片选使能 */
+  AD_CS1_LOW();
+ 
+	HAL_SPI_TransmitReceive(&hspi1,registerWord,buf,2,0xFFFF);
+	
+
+  AD_CS1_HIGH();
+
+	return ((buf[0]<<8) | buf[1]);
 }
+
+
+
+/********** (C) COPYRIGHT 2019-2030 硬石嵌入式开发团队 *******END OF FILE************/
+
