@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <math.h>
 
 #include "ad7689.h"
 /* USER CODE END Includes */
@@ -194,6 +195,114 @@ int16_t Read_Acceleration_X(void) {
     return (int16_t)((high << 8) | low);
 }
 */
+
+void readAll_ADC_Channel(uint16_t value[16]){
+  //ADC2在左侧，ADC1在右侧
+  //0-15对应从左到右16个光电管
+
+  //ADC2的0123顺序画PCB画反了
+  //至于为什么要把前两个移到末尾去，天知道
+  value[0] = AD7689_Get_Data(2, 5);
+  value[1] = AD7689_Get_Data(2, 4);
+  value[2] = AD7689_Get_Data(2, 0);
+  value[3] = AD7689_Get_Data(2, 1);
+  value[4] = AD7689_Get_Data(2, 2);
+  value[5] = AD7689_Get_Data(2, 3);
+  value[6] = AD7689_Get_Data(2, 7);
+  value[7] = AD7689_Get_Data(2, 6);
+  
+  value[8] = AD7689_Get_Data(1, 5);
+  value[9] = AD7689_Get_Data(1, 4);
+  value[10] = AD7689_Get_Data(1, 3);
+  value[11] = AD7689_Get_Data(1, 2);
+  value[12] = AD7689_Get_Data(1, 1);
+  value[13] = AD7689_Get_Data(1, 0);
+  value[14] = AD7689_Get_Data(1, 7);
+  value[15] = AD7689_Get_Data(1, 6);
+
+}
+
+/**
+  * @brief 根据16个光电管数据确定循迹线所在位置
+  * @param value 传入16个光电管数据，0-15从左到右
+  * @param pos 返回循迹线角度，中心90度，从右到左0-180度
+  * @retval 是否存在循迹线
+   */
+bool calcLinePos(uint16_t value[16], float *pos) {
+    int indices[16];
+    
+    // 初始化索引
+    for (int i = 0; i < 16; i++) indices[i] = i;
+    
+    // 冒泡排序索引数组
+    for (int i = 0; i < 15; i++) {
+        for (int j = 0; j < 15 - i; j++) {
+            if (value[indices[j]] > value[indices[j + 1]]) {
+                int temp = indices[j];
+                indices[j] = indices[j + 1];
+                indices[j + 1] = temp;
+            }
+        }
+    }
+    
+    // 计算中间10个数值的平均数
+    float sum = 0;
+    for (int i = 3; i < 13; i++) sum += value[indices[i]];
+    float average = sum / 10.0f;
+    
+    // 计算误差并保留绝对值更大的那个
+    float min_error = ((float)value[indices[0]] - average) / average * 100.0f;
+    float max_error = ((float)value[indices[15]] - average) / average * 100.0f;
+    float max_abs_error = (fabsf(min_error) > fabsf(max_error)) ? min_error : max_error;
+    
+    // 如果最大绝对误差小于20%，返回false，不设置角度
+    if (fabsf(max_abs_error) < 20.0f) {
+        return false;
+    }
+    
+    // 计算加权角度，但只使用与平均值相差大于10%的数据
+    float weighted_angle_sum = 0;
+    float weight_sum = 0;
+    int valid_count = 0;
+    
+    // 选择三个极值的索引
+    int selected_indices[3];
+    if (max_abs_error >= 0) {
+        // 最大绝对误差来自最大值，取最大的三个数
+        selected_indices[0] = indices[15];
+        selected_indices[1] = indices[14];
+        selected_indices[2] = indices[13];
+    } else {
+        // 最大绝对误差来自最小值，取最小的三个数
+        selected_indices[0] = indices[0];
+        selected_indices[1] = indices[1];
+        selected_indices[2] = indices[2];
+    }
+    
+    // 筛选有效数据：只使用与平均值相差大于10%的数据
+    for (int i = 0; i < 3; i++) {
+        int idx = selected_indices[i];
+        float error = ((float)value[idx] - average) / average * 100.0f;
+        
+        // 只使用与平均值相差大于10%的数据
+        if (fabsf(error) > 10.0f) {
+            // 角度转换：索引0(最左)→180度，索引15(最右)→0度
+            float angle = 180.0f - idx * (180.0f / 15.0f);
+            weighted_angle_sum += angle * value[idx];
+            weight_sum += value[idx];
+            valid_count++;
+        }
+    }
+    
+    // 如果没有有效数据，返回false
+    if (valid_count == 0) {
+        return false;
+    }
+    
+    // 计算加权角度
+    *pos = weighted_angle_sum / weight_sum;
+    return true;
+}
 /* USER CODE END 0 */
 
 /**
@@ -233,27 +342,8 @@ int main(void)
   uart_printf("<test>");
   HAL_Delay(500);
   LSM6DSR_Init();
+  AD7689_Init();
 
-  // AD7689各通道配置（关键修改：选择内部2.5V基准）
-  // 配置说明：bit10-9=01（内部2.5V基准），bit8=0（单极性），bit7-4=1111（全带宽），bit3=0（禁用序列器），bit2=0（不回读CFG）
-  IN_DAT[0] = (0x3849 << 2);  // 通道0（内部2.5V基准配置）
-  IN_DAT[1] = (0x38C9 << 2);  // 通道1
-  IN_DAT[2] = (0x3949 << 2);  // 通道2
-  IN_DAT[3] = (0x39C9 << 2);  // 通道3
-  IN_DAT[4] = (0x3A49 << 2);  // 通道4
-  IN_DAT[5] = (0x3AC9 << 2);  // 通道5
-  IN_DAT[6] = (0x3B49 << 2);  // 通道6
-  IN_DAT[7] = (0x3BC9 << 2);  // 通道7
-
-  // 初始化所有8通道的零点偏置数据（2.5V基准下需重新校准！）
-  bias_data[0] = BIAS_VOLTAGE_IN0;
-  bias_data[1] = BIAS_VOLTAGE_IN1;
-  bias_data[2] = BIAS_VOLTAGE_IN2;
-  bias_data[3] = BIAS_VOLTAGE_IN3;
-  bias_data[4] = BIAS_VOLTAGE_IN4;
-  bias_data[5] = BIAS_VOLTAGE_IN5;
-  bias_data[6] = BIAS_VOLTAGE_IN6;
-  bias_data[7] = BIAS_VOLTAGE_IN7;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -263,37 +353,16 @@ int main(void)
     /*
     int16_t accel_x = Read_Acceleration_X();
     uart_printf("<X Acceleration: %d>", accel_x);*/
-    // 1. 采集8通道AD原始数据
-    uint16_t ad7689_cfg[8] = {
-      IN_DAT[2], IN_DAT[3], IN_DAT[4], IN_DAT[5],
-      IN_DAT[6], IN_DAT[7],IN_DAT[0], IN_DAT[1]
-    };
-    int i;
-    for(i = 0; i < 8; i++){
-      Conve_data[i] = AD7689_Get_Data(ad7689_cfg[i]);  // 读取AD原始值
-      HAL_Delay(1);
-    }
+    uint16_t adcData[16];
+    readAll_ADC_Channel(adcData);
+    bool lineExist;
+    float linePos;
+    lineExist = calcLinePos(adcData, &linePos);
 
-    // 2. 基于2.5V基准计算电压（单位：mV）
-    uart_printf("<");
-    
-    for(i = 0; i < 8; i++){				
-      // 公式说明：
-      // (AD值 - 偏置AD值)：去除零点误差
-      // * REFERENCE_VOLTAGE：乘以基准电压（2500mV）
-      // / 0xFFFF：除以AD满量程（16位AD，最大值65535）
-      // * (OPA_RES_R1 + OPA_RES_R2)/OPA_RES_R2：运放放大倍数（(R1+R2)/R2）
-      // 简化后公式与下方一致
-      /*
-      voltage_data[i] = (Conve_data[i] - bias_data[i]) 
-                      * REFERENCE_VOLTAGE / OPA_RES_R2 
-                      * (OPA_RES_R1 + OPA_RES_R2) / 0xFFFF;*/
-      uart_printf("%d\n", Conve_data[i]);
-    }
-    uart_printf(">");
+    uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)linePos, HAL_GetTick());
 
-    // 3. 延时控制采集频率
-    HAL_Delay(100);
+    // 延时控制采集频率
+    HAL_Delay(10);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
