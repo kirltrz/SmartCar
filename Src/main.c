@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "spi.h"
-#include "stm32f1xx_hal.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -30,6 +29,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+
+#include "ad7689.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -232,6 +233,17 @@ int main(void)
   uart_printf("<test>");
   HAL_Delay(500);
   LSM6DSR_Init();
+
+  AD7689_HandleTypeDef hadc;
+  uint16_t adc_values[8];
+    
+  // 初始化AD7689
+  hadc.hspi = &hspi1;  // 假设使用SPI1
+  hadc.cnv_port = AD_CS1_GPIO_Port;
+  hadc.cnv_pin = AD_CS1_Pin;
+  hadc.vref = 2.5f;
+    
+  AD7689_Init(&hadc);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -241,7 +253,11 @@ int main(void)
     /*
     int16_t accel_x = Read_Acceleration_X();
     uart_printf("<X Acceleration: %d>", accel_x);*/
-    HAL_Delay(500);
+    if(AD7689_ScanChannels(&hadc, adc_values, 8) == HAL_OK) {
+        // 处理采集到的数据
+        uart_printf("<ADC: %d %d %d %d %d %d %d %d>",adc_values[0],adc_values[1],adc_values[2],adc_values[3],adc_values[4],adc_values[5],adc_values[6],adc_values[7]);
+    }
+    HAL_Delay(10);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
