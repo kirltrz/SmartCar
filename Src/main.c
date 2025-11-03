@@ -228,7 +228,7 @@ void readAll_ADC_Channel(uint16_t value[16]){
   * @param pos 返回循迹线角度，中心90度，从右到左0-180度
   * @retval 是否存在循迹线
    */
-bool calcLinePos(uint16_t value[16], float *pos) {
+bool calcLinePos(uint16_t value[16], int *angle) {
     int indices[16];
     
     // 初始化索引
@@ -300,8 +300,80 @@ bool calcLinePos(uint16_t value[16], float *pos) {
     }
     
     // 计算加权角度
-    *pos = weighted_angle_sum / weight_sum;
+    *angle = (int)(weighted_angle_sum / weight_sum);
     return true;
+}
+
+void motorInit(){
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // 电机1 IN1（PA8）
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // 电机1 IN2（PA9）
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);  // 电机2 IN1（PA10）
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);  // 电机2 IN2（PA11）
+}
+/**
+  * @brief  双电机速度控制（正负控方向+默认快衰减）
+  * @param  motor1_speed：电机1速度（-100~100）
+  *         正值 = 逆时针旋转（CCW），负值 = 顺时针旋转（CW），0 = 停止
+  * @param  motor2_speed：电机2速度（-100~100）
+  *         正值 = 逆时针旋转（CCW），负值 = 顺时针旋转（CW），0 = 停止
+  * @note   1. 硬件映射：左电机(1)=PA8(CH1)/PA9(CH2)，右电机(2)=PA10(CH3)/PA11(CH4)，TIM1为16位PWM（周期65535）
+  *         2. 速度自动限幅（-100~100），超出部分强制钳位
+  *         3. 默认快衰减模式（响应迅速，另一通道固定输出高电平65535）
+  *         4. 速度=0时强制停止（两通道均为低电平）
+  */
+void setMotor(int8_t motor1_speed, int8_t motor2_speed)
+{
+    // ************************** 通用配置 **************************
+    const uint16_t DECAY_FAST = 65535; // 默认快衰减（固定高电平）
+    const uint8_t MAX_SPEED = 100;     // 最大速度百分比
+
+    // ************************** 左电机（通道1/2）处理 **************************
+    // 速度限幅（-100~100）+ 取绝对值（用于计算PWM脉冲）
+    int8_t speed1_clamped = (motor1_speed > MAX_SPEED) ? MAX_SPEED : 
+                           (motor1_speed < -MAX_SPEED) ? -MAX_SPEED : motor1_speed;
+    uint8_t speed1_abs = (speed1_clamped >= 0) ? speed1_clamped : -speed1_clamped;
+    uint16_t pulse1 = (uint16_t)(speed1_abs * 65535.0f / MAX_SPEED);
+
+    if (pulse1 == 0) { // 速度=0 → 停止（两通道低电平）
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+    } else if (speed1_clamped > 0) { // 正值 → 逆时针（CCW）：CH2输出PWM，CH1快衰减（高电平）
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse1);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, DECAY_FAST);
+    } else { // 负值 → 顺时针（CW）：CH1输出PWM，CH2快衰减（高电平）
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse1);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, DECAY_FAST);
+    }
+
+    // ************************** 右电机（通道3/4）处理 **************************
+    int8_t speed2_clamped = (motor2_speed > MAX_SPEED) ? MAX_SPEED : 
+                           (motor2_speed < -MAX_SPEED) ? -MAX_SPEED : motor2_speed;
+    uint8_t speed2_abs = (speed2_clamped >= 0) ? speed2_clamped : -speed2_clamped;
+    uint16_t pulse2 = (uint16_t)(speed2_abs * 65535.0f / MAX_SPEED);
+
+    if (pulse2 == 0) { // 速度=0 → 停止
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
+    } else if (speed2_clamped > 0) { // 正值 → 逆时针（CCW）：CH4输出PWM，CH3快衰减（高电平）
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pulse2);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, DECAY_FAST);
+    } else { // 负值 → 顺时针（CW）：CH3输出PWM，CH4快衰减（高电平）
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, pulse2);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, DECAY_FAST);
+    }
+}
+
+void Tracking(int baseSpeed, bool lineExist, int lineAngle){
+  const float Kp = 0.1f;
+  const float Ki = 0.0f;
+  const float Kd = 0.0f;
+
+  int error = 90 - lineAngle;
+  if (lineExist) {
+    setMotor(baseSpeed + error * Kp, baseSpeed - error * Kp);
+  }else {
+    setMotor(0, 0);
+  }
 }
 /* USER CODE END 0 */
 
@@ -343,6 +415,10 @@ int main(void)
   HAL_Delay(500);
   LSM6DSR_Init();
   AD7689_Init();
+  motorInit();
+  //setMotor(10, 10);
+  HAL_Delay(200);
+  //setMotor(0, 0);
 
   /* USER CODE END 2 */
 
@@ -356,10 +432,11 @@ int main(void)
     uint16_t adcData[16];
     readAll_ADC_Channel(adcData);
     bool lineExist;
-    float linePos;
-    lineExist = calcLinePos(adcData, &linePos);
+    int lineAngle;
+    lineExist = calcLinePos(adcData, &lineAngle);
+    Tracking(5, lineExist, lineAngle);
 
-    uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)linePos, HAL_GetTick());
+    //uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)linePos, HAL_GetTick());
 
     // 延时控制采集频率
     HAL_Delay(10);
