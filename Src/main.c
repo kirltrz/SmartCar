@@ -226,13 +226,18 @@ void readAll_ADC_Channel(uint16_t value[16]){
   * @brief 根据16个光电管数据确定循迹线所在位置
   * @param value 传入16个光电管数据，0-15从左到右
   * @param pos 返回循迹线角度，中心90度，从右到左0-180度
-  * @retval 是否存在循迹线
+  * @retval 循迹线存在状态，0不存在，1存在，2离地
    */
-bool calcLinePos(uint16_t value[16], int *angle) {
+uint8_t calcLinePos(uint16_t value[16], int *angle) {
     int indices[16];
-    
-    // 初始化索引
-    for (int i = 0; i < 16; i++) indices[i] = i;
+    int count = 0;
+    // 初始化索引；同时判断超过4000的值的个数，大于10个视为离开地面，返回无循迹线
+    for (int i = 0; i < 16; i++) {
+      indices[i] = i;
+
+      if(value[i]>4000)count++;
+    }
+    if(count>=10) return 2;
     
     // 冒泡排序索引数组
     for (int i = 0; i < 15; i++) {
@@ -257,7 +262,7 @@ bool calcLinePos(uint16_t value[16], int *angle) {
     
     // 如果最大绝对误差小于20%，返回false，不设置角度
     if (fabsf(max_abs_error) < 20.0f) {
-        return false;
+        return 0;
     }
     
     // 计算加权角度，但只使用与平均值相差大于10%的数据
@@ -296,12 +301,12 @@ bool calcLinePos(uint16_t value[16], int *angle) {
     
     // 如果没有有效数据，返回false
     if (valid_count == 0) {
-        return false;
+        return 0;
     }
     
     // 计算加权角度
     *angle = (int)(weighted_angle_sum / weight_sum);
-    return true;
+    return 1;
 }
 
 void motorInit(){
@@ -363,16 +368,26 @@ void setMotor(int8_t motor1_speed, int8_t motor2_speed)
     }
 }
 
-void Tracking(int baseSpeed, bool lineExist, int lineAngle){
+void Tracking(int baseSpeed, uint8_t lineState, int lineAngle){
   const float Kp = 0.1f;
   const float Ki = 0.0f;
   const float Kd = 0.0f;
 
   int error = 90 - lineAngle;
-  if (lineExist) {
+  static int lastError = 0;
+  static uint8_t lastState = 0;
+  static uint32_t lastTime = 0;
+  if(lineState==0){
+    if(lastState==1 && (HAL_GetTick()-lastTime < 1000)) setMotor(baseSpeed + lastError * Kp, baseSpeed - lastError * Kp);
+    else setMotor(0, 0);
+  }else if (lineState == 1) {
     setMotor(baseSpeed + error * Kp, baseSpeed - error * Kp);
-  }else {
+    lastError = error;
+    lastState = 1;
+    lastTime = HAL_GetTick();
+  }else if(lineState == 2) {
     setMotor(0, 0);
+    lastState = 2;
   }
 }
 /* USER CODE END 0 */
@@ -431,15 +446,21 @@ int main(void)
     uart_printf("<X Acceleration: %d>", accel_x);*/
     uint16_t adcData[16];
     readAll_ADC_Channel(adcData);
-    bool lineExist;
+    uint8_t lineExist;
     int lineAngle;
     lineExist = calcLinePos(adcData, &lineAngle);
-    Tracking(5, lineExist, lineAngle);
+    Tracking(1, lineExist, lineAngle);
 
-    //uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)linePos, HAL_GetTick());
+    /*
+    uart_printf("<");
+    for (int i =0; i<16; i++) {
+    uart_printf("%d\n",adcData[i]);
+    }
+    uart_printf(">");*/
+    //uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)lineAngle, HAL_GetTick());
 
     // 延时控制采集频率
-    HAL_Delay(10);
+    HAL_Delay(1);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
