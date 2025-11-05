@@ -200,6 +200,8 @@ void readAll_ADC_Channel(uint16_t value[16]){
   //ADC2在左侧，ADC1在右侧
   //0-15对应从左到右16个光电管
 
+  uint16_t zero[16]={3149,3019,2932,2910,2950,2777,2792,3258,2831,2930,3115,2848,2831,2868,2916,3003};
+
   //ADC2的0123顺序画PCB画反了
   //至于为什么要把前两个移到末尾去，天知道
   value[0] = AD7689_Get_Data(2, 5);
@@ -220,6 +222,10 @@ void readAll_ADC_Channel(uint16_t value[16]){
   value[14] = AD7689_Get_Data(1, 7);
   value[15] = AD7689_Get_Data(1, 6);
 
+  for (int i=0; i<16; i++) {
+    if(value[i]>(zero[i]-1000))value[i] -= (zero[i]-1000);
+    else value[i] = 0;
+  }
 }
 
 /**
@@ -235,7 +241,7 @@ uint8_t calcLinePos(uint16_t value[16], int *angle) {
     for (int i = 0; i < 16; i++) {
       indices[i] = i;
 
-      if(value[i]>4000)count++;
+      if(value[i]>2000)count++;
     }
     if(count>=10) return 2;
     
@@ -261,7 +267,7 @@ uint8_t calcLinePos(uint16_t value[16], int *angle) {
     float max_abs_error = (fabsf(min_error) > fabsf(max_error)) ? min_error : max_error;
     
     // 如果最大绝对误差小于20%，返回false，不设置角度
-    if (fabsf(max_abs_error) < 20.0f) {
+    if (fabsf(max_abs_error) < 10.0f) {
         return 0;
     }
     
@@ -290,7 +296,7 @@ uint8_t calcLinePos(uint16_t value[16], int *angle) {
         float error = ((float)value[idx] - average) / average * 100.0f;
         
         // 只使用与平均值相差大于10%的数据
-        if (fabsf(error) > 10.0f) {
+        if (fabsf(error) > 5.0f) {
             // 角度转换：索引0(最左)→180度，索引15(最右)→0度
             float angle = 180.0f - idx * (180.0f / 15.0f);
             weighted_angle_sum += angle * value[idx];
@@ -326,18 +332,18 @@ void motorInit(){
   *         3. 默认快衰减模式（响应迅速，另一通道固定输出高电平65535）
   *         4. 速度=0时强制停止（两通道均为低电平）
   */
-void setMotor(int8_t motor1_speed, int8_t motor2_speed)
+void setMotor(float motor1_speed, float motor2_speed)
 {
     // ************************** 通用配置 **************************
     const uint16_t DECAY_FAST = 65535; // 默认快衰减（固定高电平）
-    const uint8_t MAX_SPEED = 100;     // 最大速度百分比
+    const float MAX_SPEED = 100.0f;     // 最大速度百分比
 
     // ************************** 左电机（通道1/2）处理 **************************
     // 速度限幅（-100~100）+ 取绝对值（用于计算PWM脉冲）
-    int8_t speed1_clamped = (motor1_speed > MAX_SPEED) ? MAX_SPEED : 
+    float speed1_clamped = (motor1_speed > MAX_SPEED) ? MAX_SPEED : 
                            (motor1_speed < -MAX_SPEED) ? -MAX_SPEED : motor1_speed;
-    uint8_t speed1_abs = (speed1_clamped >= 0) ? speed1_clamped : -speed1_clamped;
-    uint16_t pulse1 = (uint16_t)(speed1_abs * 65535.0f / MAX_SPEED);
+    float speed1_abs = (speed1_clamped >= 0) ? speed1_clamped : -speed1_clamped;
+    uint16_t pulse1 = (uint16_t)(speed1_abs * 720.0f / MAX_SPEED);
 
     if (pulse1 == 0) { // 速度=0 → 停止（两通道低电平）
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
@@ -351,10 +357,10 @@ void setMotor(int8_t motor1_speed, int8_t motor2_speed)
     }
 
     // ************************** 右电机（通道3/4）处理 **************************
-    int8_t speed2_clamped = (motor2_speed > MAX_SPEED) ? MAX_SPEED : 
+    float speed2_clamped = (motor2_speed > MAX_SPEED) ? MAX_SPEED : 
                            (motor2_speed < -MAX_SPEED) ? -MAX_SPEED : motor2_speed;
-    uint8_t speed2_abs = (speed2_clamped >= 0) ? speed2_clamped : -speed2_clamped;
-    uint16_t pulse2 = (uint16_t)(speed2_abs * 65535.0f / MAX_SPEED);
+    float speed2_abs = (speed2_clamped >= 0) ? speed2_clamped : -speed2_clamped;
+    uint16_t pulse2 = (uint16_t)(speed2_abs * 720.0f / MAX_SPEED);
 
     if (pulse2 == 0) { // 速度=0 → 停止
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
@@ -368,26 +374,64 @@ void setMotor(int8_t motor1_speed, int8_t motor2_speed)
     }
 }
 
-void Tracking(int baseSpeed, uint8_t lineState, int lineAngle){
-  const float Kp = 0.1f;
+void Tracking(float baseSpeed, uint8_t lineState, int lineAngle){
+  /*PID常量定义*/
+  const float Kp = 0.01f;
   const float Ki = 0.0f;
-  const float Kd = 0.0f;
+  const float Kd = 1.0f;
+  const float min_out = -5.0f;
+  const float max_out = 5.0f;
 
-  int error = 90 - lineAngle;
+  /*PID状态*/
   static int lastError = 0;
+  static float integral = 0.0f; //积分累积值
+  float p_out, i_out, d_out, total_out;
+
+  /*PID计算*/
+  int error = 90 - lineAngle;
+
+  p_out = Kp * error;
+
+  integral += error;
+  // 积分限幅：避免积分累积超出输出范围（Ki≠0时才生效）
+  if (Ki != 0.0f) {
+    float integral_max = 5;
+    float integral_min = -5;
+    if (integral > integral_max) integral = integral_max;
+    if (integral < integral_min) integral = integral_min;
+  }
+  i_out = Ki * integral;
+
+  d_out = Kd * (error - lastError);
+
+  total_out = p_out + i_out + d_out;
+  if (total_out > max_out) total_out = max_out;
+  if (total_out < min_out) total_out = min_out;
+
+  /*循迹线判断相关变量*/
   static uint8_t lastState = 0;
   static uint32_t lastTime = 0;
-  if(lineState==0){
-    if(lastState==1 && (HAL_GetTick()-lastTime < 1000)) setMotor(baseSpeed + lastError * Kp, baseSpeed - lastError * Kp);
-    else setMotor(0, 0);
-  }else if (lineState == 1) {
-    setMotor(baseSpeed + error * Kp, baseSpeed - error * Kp);
+
+  if(lineState==0){//未识别到循迹线，低速寻线1s
+    if(lastState==1 && (HAL_GetTick()-lastTime < 1000)) setMotor(baseSpeed + (total_out * 0.5f), baseSpeed - (total_out * 0.5f));
+    else {
+      setMotor(0, 0);
+      lastState = 0;
+      lastError = 0;
+      integral = 0;
+    }
+  }
+  else if (lineState == 1) {//正常循迹
+    setMotor(baseSpeed + total_out, baseSpeed -total_out);
     lastError = error;
     lastState = 1;
     lastTime = HAL_GetTick();
-  }else if(lineState == 2) {
+  }
+  else if(lineState == 2) {//检测到离开地面，停止循迹
     setMotor(0, 0);
     lastState = 2;
+    lastError = 0;
+    integral = 0;
   }
 }
 /* USER CODE END 0 */
@@ -449,8 +493,9 @@ int main(void)
     uint8_t lineExist;
     int lineAngle;
     lineExist = calcLinePos(adcData, &lineAngle);
-    Tracking(1, lineExist, lineAngle);
-
+    Tracking(0.1, lineExist, lineAngle);
+    //setMotor(0.01f, 0.01f);
+    
     /*
     uart_printf("<");
     for (int i =0; i<16; i++) {
@@ -459,8 +504,10 @@ int main(void)
     uart_printf(">");*/
     //uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)lineAngle, HAL_GetTick());
 
-    // 延时控制采集频率
-    HAL_Delay(1);
+    static uint32_t cycleTime;
+    
+    //uart_printf("<cycle spend %d ms, current lineState: %d>",HAL_GetTick()-cycleTime, lineExist);
+    //cycleTime = HAL_GetTick();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
