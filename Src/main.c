@@ -18,7 +18,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "custom_bus.h"
 #include "spi.h"
+#include "stm32f1xx_hal.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -33,7 +35,9 @@
 #include <string.h>
 #include <math.h>
 
+#include "UART.h"
 #include "ad7689.h"
+#include "IMU.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -72,36 +76,6 @@ void setLED(bool on){
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
-/**
- * @brief  类似printf的UART发送函数，支持格式化输出
- * @param  format: 格式化字符串（同printf）
- * @param  ...: 可变参数列表
- * @retval 发送的字节数（-1表示缓冲区溢出）
- */
-int uart_printf(const char *format, ...) {
-  uint8_t buf[256];  // 定义缓冲区（根据需求调整大小）
-  va_list args;      // 可变参数列表
-
-  // 初始化可变参数列表
-  va_start(args, format);
-
-  // 使用vsnprintf将格式化字符串写入缓冲区
-  // 最多写入255字节（留1字节给结束符）
-  int len = vsnprintf((char *)buf, sizeof(buf), format, args);
-
-  // 清理可变参数列表
-  va_end(args);
-
-  // 检查缓冲区是否溢出（len >= sizeof(buf)表示溢出）
-  if (len < 0 || len >= sizeof(buf)) {
-    return -1;  // 缓冲区溢出，返回错误
-  }
-
-  // 通过HAL库发送缓冲区数据
-  HAL_UART_Transmit(&huart3, buf, len, 1000);  // 超时1000ms
-
-  return len;  // 返回实际发送的字节数
-}
 /**
   * @brief  串口电机控制处理（接收、解析、执行）
   * @param  无
@@ -196,101 +170,6 @@ void uartCtrl(void)
         rx_index = 0;  // 重置接收状态
     }
 }
-// 写寄存器
-void LSM6DSR_WriteReg(uint8_t reg, uint8_t *value, uint16_t length) {
-    LSM6DSR_CS_LOW();
-
-    uint8_t txData[length];
-    txData[0] = reg;
-    for (uint16_t i=1; i<length; i++) {
-      txData[i] = value[i];
-    }
-    
-    HAL_SPI_Transmit(&hspi2, txData, length, HAL_MAX_DELAY);
-    
-    LSM6DSR_CS_HIGH();
-}
-
-// 读寄存器
-uint8_t LSM6DSR_ReadReg(uint8_t reg, uint8_t *value, uint16_t length) {
-    // 检查参数合法性（避免空指针或长度为0）
-    if (value == NULL || length == 0) {
-        return 1; // 无效参数
-    }
-
-    LSM6DSR_CS_LOW(); // 拉低片选，选中传感器
-
-    // 准备发送数据：第1字节为带读标志的寄存器地址，后续为dummy字节（用于读取数据）
-    uint8_t txData[1 + length];
-    txData[0] = reg | 0x80; // 最高位置1表示读操作
-    for (uint16_t i = 0; i < length; i++) {
-        txData[1 + i] = 0x00; // 填充dummy字节（SPI读取时需发送无效数据换取接收数据）
-    }
-
-    // 接收缓冲区：长度与发送数据一致（1个地址字节 + length个数据字节）
-    uint8_t rxData[1 + length];
-
-    // 执行SPI双向传输：发送地址和dummy，同时接收传感器返回的数据
-    HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(
-        &hspi2, 
-        txData,       // 发送缓冲区（地址 + dummy）
-        rxData,       // 接收缓冲区（无效字节 + 有效数据）
-        1 + length,   // 总传输字节数
-        HAL_MAX_DELAY // 超时时间
-    );
-
-    LSM6DSR_CS_HIGH(); // 拉高片选，结束通信
-
-    // 检查传输状态
-    if (status != HAL_OK) {
-        return 2; // 传输失败
-    }
-
-    // 提取有效数据（跳过接收缓冲区的第1个字节，从第2个字节开始为寄存器数据）
-    for (uint16_t i = 0; i < length; i++) {
-        value[i] = rxData[1 + i];
-    }
-
-    return 0; // 读取成功
-}
-
-// 初始化LSM6DSR
-void LSM6DSR_Init(void) {
-    HAL_Delay(50);  // 等待传感器稳定
-    
-    uint8_t buffer =0x40;
-    // 配置加速度计 (示例：104Hz, ±2g)
-    LSM6DSR_WriteReg(0x10, &buffer,1); // CTRL1_XL
-    
-    // 配置陀螺仪 (示例：104Hz, ±250dps)
-    buffer = 0x40;
-    LSM6DSR_WriteReg(0x11, &buffer,1); // CTRL2_G
-    
-    HAL_Delay(10);  // 等待传感器准备好
-    
-    uint8_t who_am_i = 0;
-    uint8_t opCode = LSM6DSR_ReadReg(0x0FU, &who_am_i,1); 
-    
-    if (who_am_i != 0x6B) {
-        // 通信失败处理
-        uart_printf("<通信失败，读取到ID：0x%02X，期望：0x6B，读取状态码：%d>", who_am_i, opCode);
-        HAL_Delay(1000);
-    } else {
-        uart_printf("<LSM6DSR初始化成功，ID：0x%02X>", who_am_i);
-    }
-
-    // 可以根据需要使能其他功能，如FIFO、中断等
-}
-
-// 读取加速度计X轴原始数据（最简单版本）
-/*
-int16_t Read_Acceleration_X(void) {
-    uint8_t low, high;
-    LSM6DSR_ReadReg(0x28, &low,1);
-    LSM6DSR_ReadReg(0x29, &high,1);
-    return (int16_t)((high << 8) | low);
-}
-*/
 
 void readAll_ADC_Channel(uint16_t value[16]){
   //ADC2在左侧，ADC1在右侧
@@ -540,21 +419,20 @@ int main(void)
   MX_TIM1_Init();
   MX_SPI1_Init();
   MX_USART3_UART_Init();
-  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
-  uart_printf("<test>");
-  HAL_Delay(500);
-  LSM6DSR_Init();
-  AD7689_Init();
+
+  BSP_SPI2_Init(); //IMU SPI初始化
+  IMU_Init();
+
+  AD7689_Init(); //光电管ADC芯片初始化
   motorInit();
 
 
   //setMotor(10, 10);
   HAL_Delay(200);
   //setMotor(0, 0);
-  uint16_t caliValueMax[16];
-  uint16_t caliValueMin[16];
-  caliLineValue(caliValueMax, caliValueMin);
+  uint16_t caliValueMax[16], caliValueMin[16];
+  //caliLineValue(caliValueMax, caliValueMin);
 
   //setMotor(50, 50);
   //HAL_Delay(3000);
@@ -566,8 +444,7 @@ int main(void)
   while (1)
   {
     /*
-    int16_t accel_x = Read_Acceleration_X();
-    uart_printf("<X Acceleration: %d>", accel_x);*/
+
     uint16_t adcData[16];
     readAll_ADC_Channel(adcData);
     uint8_t lineCount;
@@ -577,7 +454,10 @@ int main(void)
     uartCtrl();
     Tracking(40.0f, lineCount, lineAngle);
     //setMotor(0.01f, 0.01f);
-    
+*/
+//uart_printf("<%d>",HAL_GetTick());
+    lsm6dsr_read_angle_data_polling();
+
     /*
     uart_printf("<");
     for (int i =0; i<16; i++) {
