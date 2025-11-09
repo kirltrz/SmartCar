@@ -48,6 +48,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/ad7689.c
     Src/IMU.c
     Src/UART.c
+    Src/motion.c
+    Src/opt.c
 )
 
 # Add include paths

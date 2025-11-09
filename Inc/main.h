@@ -31,7 +31,7 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -53,7 +53,7 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+void setLED(bool);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
@@ -77,7 +77,7 @@ void Error_Handler(void);
 #define R_MOTOR_IN2_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
-
+extern bool offGround;
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

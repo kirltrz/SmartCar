@@ -1,2 +1,11 @@
-void IMU_Init(void);
-void lsm6dsr_read_angle_data_polling(void);
+#pragma once
+typedef struct{
+    float acceleration_mg [3];
+    float angular_rate_dps[3];
+    float linearVelocity;
+    float attitudeAngles  [3];
+}IMU_Data_t;
+
+void initIMU(void);
+void caliIMU(void);
+void getIMU(IMU_Data_t*);

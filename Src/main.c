@@ -18,9 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "custom_bus.h"
 #include "spi.h"
-#include "stm32f1xx_hal.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -35,9 +33,12 @@
 #include <string.h>
 #include <math.h>
 
+#include "custom_bus.h"
+
 #include "UART.h"
-#include "ad7689.h"
+#include "motion.h"
 #include "IMU.h"
+#include "opt.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,8 +48,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LSM6DSR_CS_HIGH()  HAL_GPIO_WritePin(IMU_CS_GPIO_Port, IMU_CS_Pin, GPIO_PIN_SET)
-#define LSM6DSR_CS_LOW()   HAL_GPIO_WritePin(IMU_CS_GPIO_Port, IMU_CS_Pin, GPIO_PIN_RESET)
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -59,7 +59,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+bool offGround = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,17 +70,11 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void setMotor(float, float);
-
 void setLED(bool on){
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
-/**
-  * @brief  串口电机控制处理（接收、解析、执行）
-  * @param  无
-  * @retval 无
-  */
+/* 通过串口控制舵机 */
 void uartCtrl(void)
 {
     static uint8_t rx_buf[32] = {0};      // 接收缓冲区
@@ -171,183 +165,11 @@ void uartCtrl(void)
     }
 }
 
-void readAll_ADC_Channel(uint16_t value[16]){
-  //ADC2在左侧，ADC1在右侧
-  //0-15对应从左到右16个光电管
-
-  //ADC2的0123顺序画PCB画反了
-  //至于为什么要把前两个移到末尾去，天知道
-  value[0] = AD7689_Get_Data(2, 5);
-  value[1] = AD7689_Get_Data(2, 4);
-  value[2] = AD7689_Get_Data(2, 0);
-  value[3] = AD7689_Get_Data(2, 1);
-  value[4] = AD7689_Get_Data(2, 2);
-  value[5] = AD7689_Get_Data(2, 3);
-  value[6] = AD7689_Get_Data(2, 7);
-  value[7] = AD7689_Get_Data(2, 6);
-  
-  value[8] = AD7689_Get_Data(1, 5);
-  value[9] = AD7689_Get_Data(1, 4);
-  value[10] = AD7689_Get_Data(1, 3);
-  value[11] = AD7689_Get_Data(1, 2);
-  value[12] = AD7689_Get_Data(1, 1);
-  value[13] = AD7689_Get_Data(1, 0);
-  value[14] = AD7689_Get_Data(1, 7);
-  value[15] = AD7689_Get_Data(1, 6);
-}
-
-/**
-   */
-void caliLineValue(uint16_t caliValueMax[16], uint16_t caliValueMin[16]){
-	uint32_t startCaliTime = HAL_GetTick();
-	const uint32_t caliTime = 5000;//5s
-
-    // 初始化校准数组	
-	for(int i = 0; i < 16; i++){
-        caliValueMax[i] = 0;      // 初始化为最小值
-        caliValueMin[i] = 0xFFFF; // 初始化为最大值
-    }
-    while(HAL_GetTick() - startCaliTime < caliTime){
-        uint16_t value[16];
-        readAll_ADC_Channel(value);
-        for(int i=0;i<16;i++){
-            if(value[i]>caliValueMax[i] && (value[i]!=0 && value[i]!=0xFFFF)) caliValueMax[i] = value[i];
-            if(value[i]<caliValueMin[i] && (value[i]!=0 && value[i]!=0xFFFF)) caliValueMin[i] = value[i];
-        }
-        setLED(1);
-        HAL_Delay(25);
-        setLED(0);
-        HAL_Delay(25);
-    }
-}
-/**
-  * @brief 根据16个光电管数据确定循迹线所在位置
-  * @param activeHighOrLow 高值为线or低值为线
-  * @param value 传入16个光电管数据，0-15从左到右
-  * @param angle 返回每条循迹线的角度，中心90度，从右到左0-180度
-  * @param caliValueMax 校准获得的高值数据
-  * @param caliValueMin 校准获得的低值数据
-  * @retval 循迹线数量，
-   */
-uint8_t calcLinePos(bool activeHighOrLow, uint16_t value[16], int angle[4], uint16_t caliValueMax[16], uint16_t caliValueMin[16]) {
-    //对传感器数值进行归一化
-    float valueAfterNormalized[16];
-    for(int i = 0; i < 16; i++){
-        valueAfterNormalized[i] = (float)(value[i]-caliValueMin[i]) / (float)(caliValueMax[i]-caliValueMin[i]);
-    }
-
-    //二值化
-    const float threshold = 0.5f;
-    bool valueAfterBinarized[16];//true为有循迹线
-    for (int i = 0; i < 16; i++) {
-        if(activeHighOrLow == 1){
-            if(valueAfterNormalized[i] > threshold) valueAfterBinarized[i] = true;
-            else valueAfterBinarized[i] = false;
-        }else {
-            if(valueAfterNormalized[i] < threshold) valueAfterBinarized[i] = true;
-            else valueAfterBinarized[i] = false;
-        }
-    }
-
-    //判断循迹线数量
-    uint8_t lineCount=0;
-    uint8_t lineStart[5],lineEnd[5]; //假设最多4根线,索引1-4
-    bool inLine = false;
-
-    for (int i = 0; i < 16; i++) {
-        if(valueAfterBinarized[i] && !inLine) {
-            // 检测到线的开始
-            lineCount++;
-            lineStart[lineCount] = i;
-            inLine = true;
-        }
-        else if(!valueAfterBinarized[i] && inLine) {
-            // 检测到线的结束
-            lineEnd[lineCount] = i-1;
-            inLine = false;
-        }
-    }
-    // 处理最后一个传感器在线上情况
-    if(inLine) {
-        lineEnd[lineCount] = 15;
-    }
-    
-    // 计算每根线的加权平均角度
-    for(int lineIdx = 1; lineIdx <= lineCount; lineIdx++) {
-        float weightedSum = 0;
-        float weightSum = 0;
-        
-        // 对当前线进行加权平均计算
-        for(int i = lineStart[lineIdx]; i <= lineEnd[lineIdx]; i++) {
-            float weight = valueAfterNormalized[i]; // 使用归一化值作为权重
-            weightedSum += i * weight;
-            weightSum += weight;
-        }
-        
-        if(weightSum > 0) {
-            // 计算该线的加权中心位置
-            float lineCenter = weightedSum / weightSum;
-            // 转换为角度：传感器0-15对应角度180-0度
-            angle[lineIdx-1] = (int)((15.0f - lineCenter) * 12.0f);
-        } else {
-            angle[lineIdx-1] = 90; // 默认角度
-        }
-    }
-    return lineCount;
-}
-
-void motorInit(){
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // 电机1 IN1（PA8）
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // 电机1 IN2（PA9）
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);  // 电机2 IN1（PA10）
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);  // 电机2 IN2（PA11）
-}
-// 设置单个电机速度
-void setSingleMotor(TIM_HandleTypeDef* htim, uint32_t pwm_channel, uint32_t decay_channel, float speed)
-{
-    const uint16_t DECAY_FAST = htim->Init.Period; // 快衰减（固定高电平）
-    const float MAX_SPEED = 100.0f;  // 最大速度百分比
-    
-    // 速度限幅（-100~100）
-    float speed_clamped = (speed > MAX_SPEED) ? MAX_SPEED : 
-                         (speed < -MAX_SPEED) ? -MAX_SPEED : speed;
-    
-    // 计算PWM脉冲值
-    float speed_abs = (speed_clamped >= 0) ? speed_clamped : -speed_clamped;
-    uint16_t pulse = (uint16_t)(speed_abs * DECAY_FAST / MAX_SPEED);
-    
-    if (pulse == 0) { 
-        // 速度=0 → 停止（两通道低电平）
-        __HAL_TIM_SET_COMPARE(htim, pwm_channel, 0);
-        __HAL_TIM_SET_COMPARE(htim, decay_channel, 0);
-    } 
-    else if (speed_clamped > 0) { 
-        // 正值 → 逆时针（CCW）：PWM通道输出PWM，衰减通道快衰减（高电平）
-        __HAL_TIM_SET_COMPARE(htim, pwm_channel, 0);
-        __HAL_TIM_SET_COMPARE(htim, decay_channel, pulse);
-    } 
-    else { 
-        // 负值 → 顺时针（CW）：衰减通道输出PWM，PWM通道快衰减（高电平）
-        __HAL_TIM_SET_COMPARE(htim, decay_channel, 0);
-        __HAL_TIM_SET_COMPARE(htim, pwm_channel, pulse);
-    }
-}
-
-// 设置双电机速度
-void setMotor(float motor1_speed, float motor2_speed)
-{
-    // 左电机：通道2为PWM，通道1为衰减（逆时针时）
-    setSingleMotor(&htim1, TIM_CHANNEL_2, TIM_CHANNEL_1, motor1_speed);
-    
-    // 右电机：通道4为PWM，通道3为衰减（逆时针时）
-    setSingleMotor(&htim1, TIM_CHANNEL_4, TIM_CHANNEL_3, motor2_speed);
-}
-
-void Tracking(float baseSpeed, uint8_t lineCount, int lineAngle[4]){
+void Tracking(float baseSpeed, uint8_t lineCount, int lineAngle[4], IMU_Data_t *IMU_Data){
     /*PID常量定义*/
-    const float Kp = 1.2f;
+    const float Kp = 1.0f;
     const float Ki = 0.0f;
-    const float Kd = 5.0f;
+    const float Kd = 0.0f;
     const float min_out = -50.0f;
     const float max_out = 50.0f;
 
@@ -361,27 +183,35 @@ void Tracking(float baseSpeed, uint8_t lineCount, int lineAngle[4]){
 
     //首先判断目标线，根据比赛地图设置
     uint8_t targetLineIndex;
+    uint8_t targetLineAngle;
+    static uint8_t lastTargetLineAngle = 90;
     if (lineCount==0) {
-
+        targetLineAngle = lastTargetLineAngle;
     }else if (lineCount == 1) {
         targetLineIndex = 0; //一条线直接走
+        targetLineAngle = lineAngle[targetLineIndex];
+        lastTargetLineAngle = targetLineAngle;
     }else if (lineCount == 2) {
-        return; //目前仅在十字路口出现瞬间此情况，直接返回等待三线时判断
+        targetLineAngle = lastTargetLineAngle;
     }else if (lineCount ==3) {
         targetLineIndex = 1; //三条线为十字路口，走中间的线
-    }else if (lineCount == 4){
-        //暂无此情况
+        targetLineAngle = lineAngle[targetLineIndex];
+        lastTargetLineAngle = targetLineAngle;
+    }else{
+        targetLineAngle = lastTargetLineAngle;
     }
 
-    error = 90 - lineAngle[targetLineIndex];
+    error = 90 - targetLineAngle;
 
     p_out = error * Kp;
+
+    i_out = 0.0f;
 
     d_out = Kd * (error - lastError);
 
     total_out = p_out + i_out + d_out;
 
-    setMotor(baseSpeed + total_out, baseSpeed -total_out);
+    setAndUpdateMotion(baseSpeed, IMU_Data->attitudeAngles[2] + (90 - targetLineAngle), IMU_Data);
 
     lastError = error;
 }
@@ -422,54 +252,73 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   BSP_SPI2_Init(); //IMU SPI初始化
-  IMU_Init();
+  
+  initIMU();
+  initOpt(); //光电管ADC芯片初始化
+  initMotor();
 
-  AD7689_Init(); //光电管ADC芯片初始化
-  motorInit();
-
-
-  //setMotor(10, 10);
+  /*
+  setMotor(10, 10);
   HAL_Delay(200);
-  //setMotor(0, 0);
-  uint16_t caliValueMax[16], caliValueMin[16];
-  //caliLineValue(caliValueMax, caliValueMin);
+  setMotor(0, 0);
+  */
 
-  //setMotor(50, 50);
-  //HAL_Delay(3000);
-  //setMotor(0, 0);
+  caliOpt(); //校准光电传感器
+  caliIMU(); //校准IMU
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /*
+    /**/
+    setLED(false);
 
-    uint16_t adcData[16];
-    readAll_ADC_Channel(adcData);
-    uint8_t lineCount;
-    int lineAngle[4];
-    lineCount = calcLinePos(true,adcData, lineAngle, caliValueMax, caliValueMin);
-
-    uartCtrl();
-    Tracking(40.0f, lineCount, lineAngle);
-    //setMotor(0.01f, 0.01f);
-*/
-//uart_printf("<%d>",HAL_GetTick());
-    lsm6dsr_read_angle_data_polling();
-
-    /*
-    uart_printf("<");
-    for (int i =0; i<16; i++) {
-    uart_printf("%d\n",adcData[i]);
-    }
-    uart_printf(">");*/
-    //uart_printf("<循迹线是否存在：%d | 循迹线所在角度：%d | 当前tick：%d>", lineExist, (int)lineAngle, HAL_GetTick());
-
-    //static uint32_t cycleTime;
     
-    //uart_printf("<cycle spend %d ms, current lineState: %d>",HAL_GetTick()-cycleTime, lineExist);
-    //cycleTime = HAL_GetTick();
+    //uartCtrl(); //串口控制电机
+    IMU_Data_t IMU_Data;
+    getIMU(&IMU_Data); //读取IMU数据
+
+    //离地检测，防止空转
+    if(IMU_Data.attitudeAngles[0]>10.0f||IMU_Data.attitudeAngles[0]<-10.0f||IMU_Data.attitudeAngles[1]>10.0f||IMU_Data.attitudeAngles[1]<-10.0f)
+    {
+      offGround = true;
+      setMotor(0.0f, 0.0f);
+      uart_printf("<offGround>");
+    }else {
+      if(offGround) uart_printf("<onGround>");
+      offGround = false;
+    }
+  //  setAndUpdateMotion(0.0f, -10.0f, &IMU_Data);
+    // IMU数据输出调试
+        uint8_t lineCount;
+    int lineAngle[4];
+    lineCount = updateOpt(true, lineAngle); //识别循迹线
+    
+    Tracking(0.5f, lineCount, lineAngle, &IMU_Data); //循迹逻辑
+    
+    /*
+    uart_printf("<accX: %d, accY: %d, accZ: %d, \ngyroX: %d, gyroY: %d, gyroZ: %d, \npitch: %d, roll: %d, yaw: %d,\n linearVelocity: %d>",
+            (int)(IMU_Data.acceleration_mg[0] * 1.00),    // 加速度X轴（mg）
+            (int)(IMU_Data.acceleration_mg[1] * 1.00),    // 加速度Y轴（mg）
+            (int)(IMU_Data.acceleration_mg[2] * 1.00),    // 加速度Z轴（mg）
+            (int)(IMU_Data.angular_rate_dps[0] * 1.00),   // 角速度X轴（°/s）
+            (int)(IMU_Data.angular_rate_dps[1] * 1.00),   // 角速度Y轴（°/s）
+            (int)(IMU_Data.angular_rate_dps[2] * 1.00),   // 角速度Z轴（°/s）
+            (int)(IMU_Data.attitudeAngles[0] * 1.00),     // 姿态角Pitch（°）
+            (int)(IMU_Data.attitudeAngles[1] * 1.00),     // 姿态角Roll（°）
+            (int)(IMU_Data.attitudeAngles[2] * 1.00),     // 姿态角Yaw（°）
+            (int)(IMU_Data.linearVelocity * 100)         // 线速度（cm/s）
+           );
+*/
+    //循环时间测试
+    /*
+    static uint32_t cycleTime = 0;
+    uart_printf("<cycle spend %d ms, current lineState: %d>",HAL_GetTick()-cycleTime, lineExist);
+    cycleTime = HAL_GetTick();
+    */
+
+    setLED(true);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
