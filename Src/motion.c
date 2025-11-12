@@ -10,9 +10,9 @@ void setAndUpdateMotion(float targetLinearVelocity, float targetAngular, IMU_Dat
     const float LINEAR_GAIN = 100.0f;  // 调整此值匹配实际速度（如 0.3 m/s → ~30% 功率）
 
     // 角速度：完整 PID 闭环（陀螺仪可靠）
-    const float angularKp = 100.0f;
+    const float angularKp = 40.0f;
     const float angularKi = 0.0f;
-    const float angularKd = 10.0f;
+    const float angularKd = 20.0f;
     const float MAX_ANGULAR_INTEGRAL = 50.0f;
 
     static float angularIntegral = 0.0f;

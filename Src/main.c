@@ -269,6 +269,11 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  static bool speedEnabled = true;        // 当前是否允许输出线速度
+  static uint32_t lastToggleTime = 0;     // 上次切换时间
+  const uint32_t ON_TIME_MS  = 80;        // 每次加速 80ms
+  const uint32_t OFF_TIME_MS = 80;        // 然后滑行 40ms（可调）
+  const float MAX_BASE_SPEED = 0.4f;     // 最大设定速度
   while (1)
   {
     /**/
@@ -280,7 +285,8 @@ int main(void)
     getIMU(&IMU_Data); //读取IMU数据
 
     //离地检测，防止空转
-    if(IMU_Data.attitudeAngles[0]>10.0f||IMU_Data.attitudeAngles[0]<-10.0f||IMU_Data.attitudeAngles[1]>10.0f||IMU_Data.attitudeAngles[1]<-10.0f)
+    if(IMU_Data.attitudeAngles[0]>10.0f||IMU_Data.attitudeAngles[0]<-10.0f
+      ||IMU_Data.attitudeAngles[1]>10.0f||IMU_Data.attitudeAngles[1]<-10.0f)
     {
       offGround = true;
       setMotor(0.0f, 0.0f);
@@ -288,14 +294,35 @@ int main(void)
     }else {
       if(offGround) uart_printf("<onGround>");
       offGround = false;
+
+      // 周期性启停线速度（仅在落地时生效）
+        uint32_t now = HAL_GetTick();
+        uint32_t elapsed = now - lastToggleTime;
+
+        if (speedEnabled) {
+            if (elapsed >= ON_TIME_MS) {
+                speedEnabled = false;
+                lastToggleTime = now;
+            }
+        } else {
+            if (elapsed >= OFF_TIME_MS) {
+                speedEnabled = true;
+                lastToggleTime = now;
+            }
+        }
     }
   //  setAndUpdateMotion(0.0f, -10.0f, &IMU_Data);
     // IMU数据输出调试
-        uint8_t lineCount;
+    uint8_t lineCount;
     int lineAngle[4];
-    lineCount = updateOpt(true, lineAngle); //识别循迹线
-    
-    Tracking(0.5f, lineCount, lineAngle, &IMU_Data); //循迹逻辑
+    lineCount = updateOpt(false, lineAngle); //识别循迹线
+    //HAL_Delay(1000);
+    // 如果离地，强制速度为0；否则按脉冲使能
+    float baseSpeed = 0.0f;
+    if (!offGround && speedEnabled) {
+        baseSpeed = MAX_BASE_SPEED;
+    }
+    Tracking(baseSpeed, lineCount, lineAngle, &IMU_Data); //循迹逻辑
     
     /*
     uart_printf("<accX: %d, accY: %d, accZ: %d, \ngyroX: %d, gyroY: %d, gyroZ: %d, \npitch: %d, roll: %d, yaw: %d,\n linearVelocity: %d>",

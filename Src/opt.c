@@ -1,5 +1,6 @@
 #include "opt.h"
 #include "ad7689.h"
+#include "UART.h"
 #include "main.h"
 
 static uint16_t caliValueMax[16], caliValueMin[16];
@@ -121,7 +122,7 @@ uint8_t updateOpt(bool activeHighOrLow, int angle[4]){
         
         // 对当前线进行加权平均计算
         for(int i = lineStart[lineIdx]; i <= lineEnd[lineIdx]; i++) {
-            float weight = valueAfterNormalized[i]; // 使用归一化值作为权重
+            float weight = 1.0f - valueAfterNormalized[i]; // 使用归一化值作为权重
             weightedSum += i * weight;
             weightSum += weight;
         }
